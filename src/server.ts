@@ -140,6 +140,11 @@ export function createApp(opts: AgentOptions): Server {
         send(res, 400, { error: "invalid_json" });
         return;
       }
+            // Preflight handshake: reply { ok: true, protocolVersion: "v1" }, signed.
+      if (raw.type === "agent-games.preflight.v1") {
+                send(res, 200, { ok: true, protocolVersion: "v1" });
+                return;
+      }
       if (raw.type !== "agent-games.proof-gatekeeper.v1") {
         send(res, 400, { error: "unsupported_type" });
         return;
