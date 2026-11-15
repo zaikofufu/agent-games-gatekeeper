@@ -56,6 +56,16 @@ function hmacHex(secret: string, body: Buffer): string {
   return createHmac("sha256", secret).update(body).digest("hex");
 }
 
+/**
+ * Structured one-line log. Only ids, decisions and timings — never the
+ * request body, a proof, a verification key, or the secret. These lines
+ * are how we tell, after a round, whether a task arrived, what the
+ * agent decided, and whether its decision proof was generated.
+ */
+function logEvent(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+}
+
 function signaturesMatch(secret: string, body: Buffer, header: string | undefined): boolean {
   if (!header) return false;
   const expected = hmacHex(secret, body);
@@ -121,14 +131,17 @@ export function createApp(opts: AgentOptions): Server {
 
       // Read the raw body first — the HMAC is over the raw bytes, and
       // it must be verified BEFORE the body is parsed or logged.
+      const started = Date.now();
       const rawBody = await readBody(req);
       const sigHeader = req.headers["x-agent-games-signature"];
       const signature = Array.isArray(sigHeader) ? sigHeader[0] : sigHeader;
       if (!signature) {
+        logEvent("auth", { reason: "missing_signature" });
         send(res, 401, { error: "missing_signature" });
         return;
       }
       if (!signaturesMatch(secret, rawBody, signature)) {
+        logEvent("auth", { reason: "invalid_signature" });
         send(res, 403, { error: "invalid_signature" });
         return;
       }
@@ -137,6 +150,7 @@ export function createApp(opts: AgentOptions): Server {
       try {
         raw = JSON.parse(rawBody.toString("utf8")) as Record<string, unknown>;
       } catch {
+        logEvent("bad_request", { error: "invalid_json" });
         send(res, 400, { error: "invalid_json" });
         return;
       }
@@ -146,6 +160,7 @@ export function createApp(opts: AgentOptions): Server {
                 return;
       }
       if (raw.type !== "agent-games.proof-gatekeeper.v1") {
+        logEvent("bad_request", { error: "unsupported_type", type: String(raw.type ?? "") });
         send(res, 400, { error: "unsupported_type" });
         return;
       }
@@ -154,9 +169,11 @@ export function createApp(opts: AgentOptions): Server {
       try {
         task = normaliseTask(raw);
       } catch {
+        logEvent("bad_request", { error: "invalid_task" });
         send(res, 400, { error: "invalid_task" });
         return;
       }
+      logEvent("task_received", { task_id: task.taskId, mode: task.mode });
 
       const result = await withTimeout(
         (async () => {
@@ -179,8 +196,13 @@ export function createApp(opts: AgentOptions): Server {
             // (-2, no reliability bonus) rather than a wrong decision.
             // Never invent a proof.
             if (!(err instanceof CircuitArtifactsMissingError)) {
+              logEvent("proof_failed", {
+                task_id: task.taskId,
+                error: err instanceof Error ? err.message : "unknown",
+              });
               throw err;
             }
+            logEvent("proof_missing", { task_id: task.taskId });
             proof = null;
           }
           // Record approved tasks only after the decision was computed,
@@ -189,6 +211,13 @@ export function createApp(opts: AgentOptions): Server {
             replay.markApprovedTask(task.taskId);
             if (task.proofTx) replay.markApprovedProofTx(task.proofTx);
           }
+          logEvent("task_decided", {
+            task_id: task.taskId,
+            decision: decision.decision,
+            reason_code: decision.reason_code,
+            proof: proof ? "generated" : "null",
+            ms: Date.now() - started,
+          });
           return {
             decision: decision.decision,
             reason_code: decision.reason_code,
@@ -203,6 +232,7 @@ export function createApp(opts: AgentOptions): Server {
       send(res, 200, result);
     } catch (err) {
       if (err instanceof Error && err.message === "response budget exceeded") {
+        logEvent("error", { error: "response_timeout" });
         // 503: cannot respond in time — the platform scores this as a
         // timeout (-2), but a late 200 would be a forfeit anyway.
         try {
@@ -212,6 +242,7 @@ export function createApp(opts: AgentOptions): Server {
         }
         return;
       }
+      logEvent("error", { error: err instanceof Error ? err.message : "unknown" });
       // Never leak internal details (or the body) in an error response.
       try {
         send(res, 500, { error: "internal_error" });
