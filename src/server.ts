@@ -200,15 +200,22 @@ export function createApp(opts: AgentOptions): Server {
             // just {decision, reason_code, proof_tx}); the platform
             // scores it as a correct decision without a valid proof
             // (-2, no reliability bonus) rather than a wrong decision.
-            // Never invent a proof.
-            if (!(err instanceof CircuitArtifactsMissingError)) {
+            // Never invent a proof. ANY prover failure degrades to
+            // proof: null instead of a 500 — not only missing
+            // artifacts, but also a circuit assert failure on a
+            // particular payload (seen live on a VK_SUBSTITUTION
+            // practice task: "Error in template
+            // GatekeeperEvaluation_79 line: 102"). A 500 leaves the
+            // task unanswered; a decision with proof: null still
+            // scores the correct decision.
+            if (err instanceof CircuitArtifactsMissingError) {
+              logEvent("proof_missing", { task_id: task.taskId });
+            } else {
               logEvent("proof_failed", {
                 task_id: task.taskId,
                 error: err instanceof Error ? err.message : "unknown",
               });
-              throw err;
             }
-            logEvent("proof_missing", { task_id: task.taskId });
             proof = null;
           }
           // Record approved tasks only after the decision was computed,

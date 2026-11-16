@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp, type AgentOptions } from "../src/server.js";
 import { createReplayStore } from "../src/verify.js";
-import { validBriefTask, validEventTask } from "./fixtures.js";
+import { RECIPIENT_BIGINT, validBriefTask, validEventTask } from "./fixtures.js";
 
 const SECRET = "test-secret-do-not-use-in-production";
 
@@ -176,6 +176,47 @@ describe("POST /agent — HMAC", () => {
     const second = await fetch(`${base}/agent`, { method: "POST", headers, body });
     const payload = (await second.json()) as Record<string, unknown>;
     expect(payload).toMatchObject({ decision: "REJECT", reason_code: "PROOF_REUSED" });
+  });
+});
+
+describe("POST /agent — prover throws a generic error", () => {
+  it("fails soft: 200 with the decision and proof: null, not a 500", async () => {
+    // Live case (16 Nov 2026): a VK_SUBSTITUTION practice task made
+    // proof generation assert-fail ("Error in template
+    // GatekeeperEvaluation_79 line: 102") and the server answered
+    // HTTP 500, so no decision was delivered. A 500 is an unanswered
+    // task (-2); a decision with proof: null still scores the
+    // correct decision.
+    const { app, base } = await startServer({
+      prover: async () => {
+        throw new Error(
+          "Assert Failed. Error in template GatekeeperEvaluation_79 line: 102",
+        );
+      },
+    });
+    try {
+      const body = JSON.stringify(validBriefTask());
+      const res = await fetch(`${base}/agent`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agent-games-signature": sign(SECRET, body),
+        },
+        body,
+      });
+      expect(res.status).toBe(200);
+      const payload = (await res.json()) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        decision: "APPROVE",
+        reason_code: "VALID_CONDITION",
+        proof: null,
+      });
+      // The decision's own public signals are kept (same as the
+      // missing-artifacts path), so the response shape is unchanged.
+      expect(payload.public_signals).toEqual(["1460", "1000", RECIPIENT_BIGINT, "19842201"]);
+    } finally {
+      await new Promise<void>((r) => app.close(() => r()));
+    }
   });
 });
 
