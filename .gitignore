@@ -4,3 +4,6 @@ dist/
 *.local
 *.log
 coverage/
+# Runtime state: the replay store file (approved task ids / proof txs).
+# Created at runtime, never committed.
+data/

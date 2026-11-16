@@ -38,7 +38,7 @@ wrong REJECT −3, timeout −2, missing/invalid proof −2, reliability bonus +
 | File | What it does |
 | --- | --- |
 | `src/server.ts` | HTTP server (Node built-in `http`, no framework). HMAC verify **before** parsing, response signing, 50s internal budget inside the 60s deadline, 401/403/503 handling. |
-| `src/verify.ts` | Pure decision logic + payload normalisation (both documented shapes) + VK hashing + in-memory replay store. |
+| `src/verify.ts` | Pure decision logic + payload normalisation (both documented shapes) + VK hashing + file-backed replay store. |
 | `src/proof.ts` | Decision-proof generation with the real gatekeeper circuit (snarkjs `fullProve`), circuit constants, input mapping. |
 | `src/index.ts` | Entry point; refuses to start without `AGENT_SECRET`. |
 | `test/verify.test.ts` | Decision branches (mocked incoming-proof verifier — labelled). |
@@ -73,7 +73,7 @@ The published wasm/zkey were downloaded and exercised with snarkjs:
 4. **Reason-code names differ.** The brief lists `EXPIRED`; the event page uses `EXPIRED_CONDITION`, plus `PROOF_REUSED` and `AMOUNT_OVERFLOW` traps that the brief's enum omits. This code emits the event-page names for block expiry / reuse / overflow. If the platform validates reason codes strictly against the brief's enum, those three should be mapped to `EXPIRED` / `PROOF_INVALID` — check in practice mode.
 5. **Salt derivation is an assumption.** `salt` is derived deterministically as SHA-256(`taskId:decision`) mod the BN128 prime. The circuit accepts any field element, so this cannot make a correct decision unprovable, but if the platform expects a specific salt, update `toCircuitInput`.
 6. **Expiry units.** Block-height expiry (`expiry_block` vs `current_block`) and timestamp expiry (`expiry` vs `received_at`) are both supported and compared as given. They must be in the same unit within one task.
-7. **Replay store is in-memory.** A restart clears the seen-set, and two instances do not share it. For production, replace `createReplayStore()` with a shared store (e.g. Redis). The platform also tracks replays, so this is a second line of defence, not the only one.
+7. **Replay store is file-backed on one machine.** Approved task ids / proof txs persist to `data/replay.json` (override with `SEEN_STORE_PATH`), written synchronously on every mark, so a process restart on the same machine no longer wipes the seen-set — this is what caught the PROOF_REUSED misses in practice on 16 Nov 2026 (the Fly trial machine restarts ~every 5 min). Limits: a fresh deploy (new machine) starts with an empty store, and two instances do not share it — a multi-instance deployment still needs a shared store (e.g. Redis). The platform also tracks replays, so this is a second line of defence, not the only one.
 8. **No on-chain submission.** The agent returns the Groth16 proof in its HTTP response; it does **not** submit proofs to zkVerify via Kurier or zkVerifyJS. The platform's docs present that as a separate verification path — if the platform expects the agent to submit the proof itself, that is a follow-up feature, not implemented here.
 9. **Response signing.** `/build` says every response is signed with `x-agent-games-signature` over the raw response body. This server does that. The health endpoint is signed too.
 

@@ -26,7 +26,8 @@ const verifyFalse: ProofVerifier = async () => false;
 function decideBrief(raw: unknown, verifyProof: ProofVerifier = verifyTrue) {
   return decide(normaliseTask(raw as Record<string, unknown>), {
     verifyProof,
-    replay: createReplayStore(),
+    // In-memory: these tests must not touch the real replay file.
+    replay: createReplayStore({ filePath: null }),
   });
 }
 
@@ -160,7 +161,7 @@ describe("PROOF_INVALID -> REJECT", () => {
 
 describe("PROOF_REUSED -> REJECT", () => {
   it("same task_id approved twice", async () => {
-    const replay = createReplayStore();
+    const replay = createReplayStore({ filePath: null });
     const task = normaliseTask(validBriefTask() as unknown as Record<string, unknown>);
     const first = await decide(task, { verifyProof: verifyTrue, replay });
     expect(first.decision).toBe("APPROVE");
@@ -171,7 +172,7 @@ describe("PROOF_REUSED -> REJECT", () => {
   });
 
   it("same proof_tx approved twice (event shape)", async () => {
-    const replay = createReplayStore();
+    const replay = createReplayStore({ filePath: null });
     const task = normaliseTask(validEventTask() as unknown as Record<string, unknown>);
     const first = await decide(task, { verifyProof: verifyTrue, replay });
     expect(first.decision).toBe("APPROVE");
@@ -181,7 +182,7 @@ describe("PROOF_REUSED -> REJECT", () => {
   });
 
   it("a REJECTED task is not recorded as reused (only approvals are)", async () => {
-    const replay = createReplayStore();
+    const replay = createReplayStore({ filePath: null });
     const task = normaliseTask(
       validEventTask({ public_balance: "1" }) as unknown as Record<string, unknown>,
     );

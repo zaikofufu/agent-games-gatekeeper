@@ -18,6 +18,8 @@
  * expiry are NOT published by the platform — see computeVkHash).
  */
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 export type Decision = "APPROVE" | "REJECT";
 
@@ -102,16 +104,113 @@ export interface ReplayStore {
   markApprovedProofTx(proofTx: string): void;
 }
 
-/** In-memory replay store. See README: a multi-instance deployment needs
- *  a shared store (e.g. Redis); a restart currently clears the seen-set. */
-export function createReplayStore(): ReplayStore {
-  const approvedTasks = new Set<string>();
-  const approvedProofTx = new Set<string>();
+/** Max approved task ids / proof txs kept per set (oldest trimmed first). */
+export const DEFAULT_REPLAY_MAX_ENTRIES = 5000;
+/** Default store file, relative to the process working directory. */
+export const DEFAULT_REPLAY_FILE = "data/replay.json";
+
+export interface ReplayStoreOptions {
+  /**
+   * Path of the JSON file the store persists to.
+   *  - a string: file-backed at that path (relative paths resolve
+   *    against the process working directory);
+   *  - undefined: the SEEN_STORE_PATH env var, else "data/replay.json";
+   *  - null: purely in-memory, nothing is written to disk (tests).
+   */
+  filePath?: string | null;
+  /** Max entries kept per set (oldest trimmed first). Default 5000. */
+  maxEntries?: number;
+}
+
+/**
+ * File-backed replay store. Approved task ids and proof txs live in
+ * in-memory Sets (the hot path) and are written to a JSON file
+ * synchronously on every mark, so a process restart on the same
+ * machine — e.g. the Fly trial machine stopping every ~5 minutes —
+ * no longer wipes the seen-set. A fresh store instance loads the file
+ * on creation.
+ *
+ * Limits: the file lives on the machine's own filesystem, so a fresh
+ * deploy (a new machine) starts with an empty store, and two
+ * instances do not share it — a multi-instance deployment still
+ * needs a shared store (e.g. Redis). Writes go to a temp file +
+ * rename so a SIGINT mid-write cannot leave a half-written file.
+ * A failed load or write never throws: the in-memory sets still hold
+ * the entry for this process, so the decision path is unaffected —
+ * only cross-restart durability is lost. Only ids are stored, never
+ * task bodies, proofs, keys or secrets.
+ */
+export function createReplayStore(opts: ReplayStoreOptions = {}): ReplayStore {
+  const maxEntries = Math.max(1, Math.floor(opts.maxEntries ?? DEFAULT_REPLAY_MAX_ENTRIES));
+  const filePath =
+    opts.filePath === null
+      ? null
+      : resolve(process.cwd(), opts.filePath ?? process.env.SEEN_STORE_PATH ?? DEFAULT_REPLAY_FILE);
+
+  const taskQueue: string[] = [];
+  const taskSet = new Set<string>();
+  const txQueue: string[] = [];
+  const txSet = new Set<string>();
+
+  function add(queue: string[], set: Set<string>, value: string): void {
+    if (set.has(value)) return;
+    queue.push(value);
+    set.add(value);
+    while (queue.length > maxEntries) {
+      const oldest = queue.shift();
+      if (oldest !== undefined) set.delete(oldest);
+    }
+  }
+
+  function load(): void {
+    if (filePath === null) return;
+    try {
+      if (!existsSync(filePath)) return;
+      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as {
+        tasks?: unknown;
+        proofTx?: unknown;
+      };
+      // Keep only the newest maxEntries of each list, in file order.
+      for (const [list, queue, set] of [
+        [parsed.tasks, taskQueue, taskSet],
+        [parsed.proofTx, txQueue, txSet],
+      ] as const) {
+        if (!Array.isArray(list)) continue;
+        for (const entry of list.slice(-maxEntries)) {
+          if (typeof entry === "string") add(queue, set, entry);
+        }
+      }
+    } catch {
+      // Corrupt or unreadable file: start empty and let the next mark
+      // rewrite a valid file. Same exposure as the old in-memory store.
+      console.error(`replay store: could not load ${filePath}; starting empty`);
+    }
+  }
+
+  function persist(): void {
+    if (filePath === null) return;
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+      const tmp = `${filePath}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ tasks: taskQueue, proofTx: txQueue }), "utf8");
+      renameSync(tmp, filePath);
+    } catch {
+      console.error(`replay store: could not persist ${filePath}`);
+    }
+  }
+
+  function mark(queue: string[], set: Set<string>, value: string): void {
+    if (set.has(value)) return; // No change, no rewrite.
+    add(queue, set, value);
+    persist();
+  }
+
+  load();
   return {
-    hasApprovedTask: (t) => approvedTasks.has(t),
-    markApprovedTask: (t) => void approvedTasks.add(t),
-    hasApprovedProofTx: (t) => approvedProofTx.has(t),
-    markApprovedProofTx: (t) => void approvedProofTx.add(t),
+    hasApprovedTask: (t) => taskSet.has(t),
+    markApprovedTask: (t) => mark(taskQueue, taskSet, t),
+    hasApprovedProofTx: (t) => txSet.has(t),
+    markApprovedProofTx: (t) => mark(txQueue, txSet, t),
   };
 }
 

@@ -9,6 +9,14 @@
  * Optional env:
  *   PORT           default 3000 (Fly.io sets this automatically)
  *   AGENT_NAME     default "gatekeeper"
+ *   SEEN_STORE_PATH
+ *                  where the replay store persists approved task ids /
+ *                  proof txs (default data/replay.json, relative to the
+ *                  working directory). The file survives process
+ *                  restarts on the same machine, so a reused proof is
+ *                  still recognised after the Fly trial machine stops
+ *                  and restarts. A fresh deploy starts with an empty
+ *                  store (new machine, new filesystem).
  *   GATEKEEPER_WASM / GATEKEEPER_ZKEY
  *                  local circuit artifact paths (see README). Without
  *                  them the agent decides correctly but returns
@@ -28,6 +36,7 @@ const app = createApp({
   agentName: process.env.AGENT_NAME ?? "gatekeeper",
   wasmPath: process.env.GATEKEEPER_WASM || undefined,
   zkeyPath: process.env.GATEKEEPER_ZKEY || undefined,
+  replayFilePath: process.env.SEEN_STORE_PATH || undefined,
 });
 
 app.listen(port, () => {

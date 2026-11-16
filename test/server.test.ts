@@ -9,6 +9,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp, type AgentOptions } from "../src/server.js";
+import { createReplayStore } from "../src/verify.js";
 import { validBriefTask, validEventTask } from "./fixtures.js";
 
 const SECRET = "test-secret-do-not-use-in-production";
@@ -22,6 +23,8 @@ async function startServer(overrides: Partial<AgentOptions> = {}) {
     secret: SECRET,
     verifyProof: async () => true,
     prover: async () => ({ proof: { pi_a: ["1"] }, publicSignals: ["1", "2"] }),
+    // In-memory replay store: HTTP tests must not touch the real file.
+    replay: createReplayStore({ filePath: null }),
     ...overrides,
   });
   await new Promise<void>((resolve) => app.listen(0, resolve));

@@ -49,6 +49,12 @@ export interface AgentOptions {
   wasmPath?: string;
   zkeyPath?: string;
   replay?: ReplayStore;
+  /**
+   * Path of the replay-store file. Defaults to SEEN_STORE_PATH or
+   * data/replay.json (see createReplayStore in verify.ts). Ignored
+   * when `replay` is injected.
+   */
+  replayFilePath?: string;
   responseBudgetMs?: number;
 }
 
@@ -105,7 +111,7 @@ export function createApp(opts: AgentOptions): Server {
   const verifyProof: ProofVerifier =
     opts.verifyProof ??
     ((vk, publicSignals, proof) => snarkjs.groth16.verify(vk, publicSignals, proof));
-  const replay = opts.replay ?? createReplayStore();
+  const replay = opts.replay ?? createReplayStore({ filePath: opts.replayFilePath });
   const budget = opts.responseBudgetMs ?? RESPONSE_BUDGET_MS;
 
   function send(res: ServerResponse, status: number, payload: unknown): void {
